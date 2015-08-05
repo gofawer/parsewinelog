@@ -27,6 +27,7 @@ SOFTWARE.
 #include <condition_variable>
 #include <functional>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -35,7 +36,29 @@ SOFTWARE.
 
 std::mutex mutex;
 std::condition_variable processCondition;
+
+std::ifstream::pos_type fileSize;
+
 std::string help = "Usage: parsewinelog [yourlog.txt]";
+
+std::ifstream::pos_type getFilesize(const std::string& filename)
+{
+    std::ifstream in(filename, std::ifstream::ate | std::ifstream::binary);
+    return in.tellg();
+}
+
+static inline void progressBar(unsigned int x, unsigned int n, unsigned int w = 50)
+{
+    if ( (x != n) && (x % (n/100+1) != 0) ) return;
+
+    float ratio  =  x/(float)n;
+    int   c      =  ratio * w;
+
+    std::cout << std::setw(3) << (int)(ratio*100) << "% [";
+    for (int x=0; x<c; x++) std::cout << "=";
+    for (int x=c; x<w; x++) std::cout << " ";
+    std::cout << "]\r" << std::flush;
+}
 
 std::ifstream openInFile(std::string f)
 {
@@ -44,6 +67,10 @@ std::ifstream openInFile(std::string f)
         if (!inFile.is_open()) {
                 std::cout << "Couldn't read input file: " << f << std::endl;
                 inFile = std::ifstream();
+        } else {
+                fileSize = getFilesize(f);
+                std::cout << "Parsing: " << f
+                        << " -- Filesize: " << fileSize << std::endl;
         }
 
         return inFile;
@@ -256,7 +283,7 @@ struct ThreadPool {
                 int lineNum = 0;
                 std::string line;
                 while (getline(inFile, line)) {
-                        std::cout << "Parsing line: " << ++lineNum << std::endl;
+                        // std::cout << "Parsing line: " << ++lineNum << std::endl;
                         if (line.find("Call") != std::string::npos) {
                                 workerPool.enqueue(std::move(line));
                         } else if (line.find("Ret") != std::string::npos) {
@@ -264,11 +291,12 @@ struct ThreadPool {
                         } else {
                                 outFile << line << std::endl;
                         }
+                        progressBar((inFile.tellg()/100) + 1, fileSize/100);
                 }
 
                 // Finalise //
                 std::cout << std::endl << "Lines left: " << workerPool.size()
-                << std::endl;
+                        << " -- Outputting to file." << std::endl;
                 // std::cout << workerPool;
                 outFile << workerPool;
                 // Cleanup //
