@@ -70,7 +70,8 @@ std::ifstream openInFile(std::string f)
         } else {
                 fileSize = getFilesize(f);
                 std::cout << "Parsing: " << f
-                        << " -- Filesize: " << fileSize << std::endl;
+                        << " -- Filesize: " << fileSize/1000000 << " MB"
+                        << std::endl;
         }
 
         return inFile;
