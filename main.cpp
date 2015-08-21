@@ -103,36 +103,44 @@ std::ofstream openOutFile(std::string f)
         return outFile;
 }
 
-
+/* Our actual work. Since the software requires to store the call, and later
+process it, we don't use std::function. Of course that would be a nicer way
+to go about it. All this does is either store a string, or compare the member
+string with another. */
 struct Parser {
+        /* Store the payload. */
         Parser(std::string call) : Call(call) {}
 
+        /* Process the payload*/
         bool operator()(const std::string& Ret) const
         {
-                // Check the call match.
+                /* Check the call match. This "cleaning" could be done in the
+                constructor, but I put it here. As the performance bottleneck
+                is expected to be all in this method. */
                 auto callPosBegin = Call.find("Call ") + 5;
                 auto callPosEnd = Call.find_first_of('(') - callPosBegin;
                 std::string funcCall = Call.substr(callPosBegin, callPosEnd);
-                // std::cout << funcCall << std::endl;
 
+                /* Do we match the "ret"urn? This is the single most expensive
+                operation of the entire software! */
                 if (Ret.find(funcCall) == std::string::npos)
-                return false;
+                        return false;
 
-                // Check return address, if it exists.
+                /* Check return address, if it exists. */
                 auto addrPosBegin = Call.find("ret=");
 
+                /* There was no return address, assume we match the string.
+                Another expensive operation, but not so bad. */
                 if (addrPosBegin == std::string::npos)
-                return true;
+                        return true;
 
                 addrPosBegin += 4;
-                std::string addr = Call.substr(addrPosBegin);
-                // std::cout << addr << std::endl;
+                std::string addr = Call.substr(addrPosBegin); // Get the return address.
 
+                /* Do we also match the address? Another expensive operation. */
                 if (Ret.find(addr) == std::string::npos)
-                return false;
+                        return false;
 
-                // std::cout << std::endl << "Match" << std::endl;
-                // std::cout << Call << std::endl << "    - " << Ret << std::endl;
                 return true;
         }
 
