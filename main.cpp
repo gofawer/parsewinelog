@@ -202,40 +202,60 @@ struct Thread {
         std::vector<Parser> parseVector;
 };
 
+/* This is the thread pool. It will contain as many threads as your processor
+supports - 1, since we also have the main thread.
+It uses a vector of the thread objects, will enqueue work to the thread that
+has the least work to do, and has a few utility methods like killAll and size.
+The output is tailored to this specific software, and should be rewritten if
+you use this. */
 struct ThreadPool {
         ThreadPool()
         {
+                /* Ask kingly how many threads the CPU supports. */
                 auto numThreads = std::thread::hardware_concurrency() - 1;
+                /* 0 is either an error or dual core. -1 single core (does that
+                still exist?) */
                 if (numThreads <= 0)
                 numThreads = 1;
+                /* Create the thread objects. Emplace them in the vector. */
                 for (auto i = 0; i < numThreads; ++i) {
                         pool.emplace_back(new Thread());
                 }
         }
 
+        /* Loop over the threads in a "horizontal" manner, assuming the work
+        was well balanced and is somewhat still in order.
+        FIXME: A better way of outputting sequentially would be to store the
+        line number, and output according to that. */
         friend std::ostream& operator<<(std::ostream& os, ThreadPool& tp)
         {
                 int i = 0;
                 while (!tp.pool.empty()) {
+                        /* This will unlock the thread, more info below. */
                         if (tp.pool[i]->size() == 0) {
                                 i = tp.killThread(i);
                                 continue;
                         }
 
-                        os << *(tp.pool[i]);
-                        i = (i + 1) % tp.pool.size();
+                        os << *(tp.pool[i]); // Print to file.
+                        i = (i + 1) % tp.pool.size(); // Loop de loop.
                 }
-                return os;
+                return os; // Never forget.
         }
 
+        /* This was a major problem. The threads were stuck waiting on their
+        mutexes and the condition variable. So here we need to first, switch
+        the running bool to stop, then unlock all the mutexes so the thread
+        completes its "infinit" work loop. */
         int killThread(const int& i)
         {
-                pool[i]->stop();
-                processCondition.notify_all();
-                pool.erase(pool.begin() + i);
-                return i < pool.size() ? i : 0;
+                pool[i]->stop(); // Notify the thread it is done, pat on back.
+                processCondition.notify_all(); // Triggers the conditional var.
+                pool.erase(pool.begin() + i); // Remove the pool from our vector.
+                return i < pool.size() ? i : 0; // Return the next thread.
         }
 
+        /* Utility method to kill all the threads. Unused. */
         void killAll()
         {
                 for (const auto& x : pool) {
@@ -244,25 +264,32 @@ struct ThreadPool {
                 processCondition.notify_all();
         }
 
+        /* This is where we add work. We will check which thread has the least
+        amount of work to distribute the work-load. */
         void enqueue(std::string call)
         {
+                /* next points to the least busy thread. */
                 auto next = std::min_element(pool.begin(), pool.end(),
                 [](const std::unique_ptr<Thread>& i,
                         const std::unique_ptr<Thread>& j)
                         { return i->size() < j->size(); });
 
-                        (**next).addCall(std::move(call));
+                (**next).addCall(std::move(call)); // Add work.
         }
 
+        /* Notify all threads they can process their queued up work. This
+        effectivily unlocks their mutexes (once) using a conditional variable.
+        We lock_guard in case the threads are still working. */
         void process(std::string line)
         {
-                std::lock_guard<std::mutex> lock(mutex);
+                std::lock_guard<std::mutex> lock(mutex); // Threads aren't ready.
                 for (const auto& x : pool) {
-                        x->processLine(line);
+                        x->processLine(line); // Line is NOT moved.
                 }
-                processCondition.notify_all();
+                processCondition.notify_all(); // Get to work!
         }
 
+        /* Utility, how many objects are queued for work. */
         int size()
         {
                 int ret = 0;
@@ -272,6 +299,9 @@ struct ThreadPool {
                 return ret;
         }
 
+        /* We use unique_ptr because there where major move semantics issues.
+        Since the only real work in the thread pool is figuring out which thread
+        is available, memory data alignement is not as important. */
         std::vector<std::unique_ptr<Thread>> pool;
 };
 
