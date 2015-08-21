@@ -139,66 +139,94 @@ struct Parser {
         std::string Call;
 };
 
+/* The actual thread. This guy contains a vector of work functors. Here we are
+parsing strings. I couldn't use a vector of std::function as I need to store
+a parameter inside, and later process that. A function object seemed
+more appropriate. */
 struct Thread {
+        /* WARING: If you have other member assignements, the thread
+        construction would be in another method, and called AFTER the
+        constructor. Remember that constructor initialization order is NOT
+        guaranteed! */
         Thread() { myThread = std::thread(&Thread::run, this); }
 
-        ~Thread()
-        {
-                running = false;
-                myThread.join();
-        }
+        /* If this is called before the thread is done, your software will hang. */
+        ~Thread() { myThread.join(); }
 
+        /* Our final output method. We lock_guard on an internal mutex in case
+        things went bad and the thread hasn't finished working. More than likely
+        processing it's "last run". */
         friend std::ostream& operator<<(std::ostream& os, Thread& t)
         {
-                std::lock_guard<std::mutex> lk(t.vectorMutex);
-                os << t.parseVector[0].Call << std::endl;
-                t.parseVector.erase(t.parseVector.begin());
-                return os;
+                std::lock_guard<std::mutex> lk(t.vectorMutex); // Don't explode.
+                os << t.parseVector[0].Call << std::endl; // Output remaining call.
+                t.parseVector.erase(t.parseVector.begin()); // Yes yes I know...
+                return os; // Never forget!
         }
 
+        /* This is our working state: wait till we are ready to work,
+        get notified we are, do work, rince repeat. Lock on an internal mutex
+        in case work is still getting queued up. */
         void run()
         {
                 while(running) {
-                        // Wait to be notified.
+                        /* Wait to be notified. */
                         std::unique_lock<std::mutex> lock(mutex);
+                        /* Very simple conditon variable example. */
                         processCondition.wait(lock);
 
+                        /* Vector is free? */
                         std::lock_guard<std::mutex> lk(vectorMutex);
                         for (int i = 0; i < parseVector.size(); ++i) {
+                                /* The functor returns true if the call was
+                                matched. */
                                 if (parseVector[i](currentWork)) {
+                                        /* I know. But data oriented design.
+                                        Do some performance analysis and see how
+                                        this really isn't a bottle-neck. */
                                         parseVector.erase(parseVector.begin() + i);
-                                        // std::cout << "erase" << std::endl;
+                                        /* We know that we only have to match 1
+                                        call.
+                                        TODO: We could notify other threads they
+                                        are also done.*/
                                         break;
                                 }
                         }
                 }
         }
 
+        /* Utility */
         void stop()
         {
                 running = false;
         }
 
+        /* Create a function object, move the call string in it. */
         void addCall(std::string call)
         {
-                std::lock_guard<std::mutex> lk(vectorMutex);
+                std::lock_guard<std::mutex> lk(vectorMutex); // Just in case.
                 parseVector.push_back(Parser(std::move(call)));
         }
 
+        /* The string to process is copied inside the thread. */
         void processLine(std::string line)
         {
                 currentWork = line;
         }
 
+        /* Utility */
         int size()
         {
                 return parseVector.size();
         }
 
-        bool running = true;
-        std::string currentWork;
-        std::thread myThread;
-        std::mutex vectorMutex;
+        bool running = true; // We start running.
+        std::string currentWork; // The copied string to process.
+        std::thread myThread; // Our thread.
+        std::mutex vectorMutex; // Inner mutex to prevent explosions.
+
+        /* We store the functors contiguously in a vector, as this will REALLY
+        improve the performance. No Pointers Allowed. */
         std::vector<Parser> parseVector;
 };
 
@@ -240,7 +268,7 @@ struct ThreadPool {
                         os << *(tp.pool[i]); // Print to file.
                         i = (i + 1) % tp.pool.size(); // Loop de loop.
                 }
-                return os; // Never forget.
+                return os; // Never forget!
         }
 
         /* This was a major problem. The threads were stuck waiting on their
