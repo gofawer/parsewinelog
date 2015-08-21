@@ -34,19 +34,27 @@ SOFTWARE.
 #include <thread>
 #include <vector>
 
+/* This mutex will lock our threads, until a new line is read and is ready
+to be parsed. */
 std::mutex mutex;
+
+/* This condition variable is responsible for alerting mutex when things are
+ready. */
 std::condition_variable processCondition;
 
-std::ifstream::pos_type fileSize;
+std::ifstream::pos_type fileSize; // Total file size used for the status meter.
 
-std::string help = "Usage: parsewinelog [yourlog.txt]";
+std::string help = "Usage: parsewinelog [yourlog.txt]"; // --help output.
 
+/* We need to know the total file size so we can output the progress meter. */
 std::ifstream::pos_type getFilesize(const std::string& filename)
 {
     std::ifstream in(filename, std::ifstream::ate | std::ifstream::binary);
     return in.tellg();
 }
 
+/* This is the progress bar. Mostly copied from
+https://www.ross.click/2011/02/creating-a-progress-bar-in-c-or-any-other-console-app/ */
 static inline void progressBar(unsigned int x, unsigned int n, unsigned int w = 50)
 {
     if ( (x != n) && (x % (n/100+1) != 0) ) return;
@@ -60,6 +68,7 @@ static inline void progressBar(unsigned int x, unsigned int n, unsigned int w = 
     std::cout << "]\r" << std::flush;
 }
 
+/* A simple function to open the read file. */
 std::ifstream openInFile(std::string f)
 {
         std::ifstream inFile(f, std::ios::in);
@@ -77,6 +86,7 @@ std::ifstream openInFile(std::string f)
         return inFile;
 }
 
+/* A simple function to open the output file. */
 std::ofstream openOutFile(std::string f)
 {
         auto extPos = f.find_last_of(".");
@@ -242,66 +252,95 @@ struct ThreadPool {
                         { return i->size() < j->size(); });
 
                         (**next).addCall(std::move(call));
-                }
+        }
 
-                void process(std::string line)
-                {
-                        std::lock_guard<std::mutex> lock(mutex);
-                        for (const auto& x : pool) {
-                                x->processLine(line);
-                        }
-                        processCondition.notify_all();
-                }
-
-                int size()
-                {
-                        int ret = 0;
-                        for (const auto& x : pool) {
-                                ret += x->size();
-                        }
-                        return ret;
-                }
-
-                std::vector<std::unique_ptr<Thread>> pool;
-        };
-
-        int main(int argc, char** argv)
+        void process(std::string line)
         {
-                // Print Help //
-                if (argc <= 1 || argc > 2) {
-                        std::cout << help << std::endl;
-                        return 0;
+                std::lock_guard<std::mutex> lock(mutex);
+                for (const auto& x : pool) {
+                        x->processLine(line);
                 }
+                processCondition.notify_all();
+        }
 
-                // Initialize //
-                std::string filename = std::string(argv[1]);
-                std::ifstream inFile = openInFile(filename);
-                std::ofstream outFile = openOutFile(filename);
-                ThreadPool workerPool;
-
-
-                // Parse //
-                int lineNum = 0;
-                std::string line;
-                while (getline(inFile, line)) {
-                        // std::cout << "Parsing line: " << ++lineNum << std::endl;
-                        if (line.find("Call") != std::string::npos) {
-                                workerPool.enqueue(std::move(line));
-                        } else if (line.find("Ret") != std::string::npos) {
-                                workerPool.process(std::move(line));
-                        } else {
-                                outFile << line << std::endl;
-                        }
-                        progressBar((inFile.tellg()/100) + 1, fileSize/100);
+        int size()
+        {
+                int ret = 0;
+                for (const auto& x : pool) {
+                        ret += x->size();
                 }
+                return ret;
+        }
 
-                // Finalise //
-                std::cout << std::endl << "Lines left: " << workerPool.size()
-                        << " -- Outputting to file." << std::endl;
-                // std::cout << workerPool;
-                outFile << workerPool;
-                // Cleanup //
-                inFile.close();
-                outFile.close();
+        std::vector<std::unique_ptr<Thread>> pool;
+};
+
+/* Our main software, we will:
+Open the input file, create the output file.
+Read the input file, create functor parser objects.
+Notify the threadpool that when a new line is ready for parsing.
+Print a progress bar.
+Finally output the remaining parser objects in the output file.
+Close the open files.
+...
+profit */
+int main(int argc, char** argv)
+{
+        /* Print Help */
+        if (argc <= 1 || argc > 2) {
+                std::cout << help << std::endl;
                 return 0;
         }
+
+        /* Initialize */
+        std::string filename = std::string(argv[1]); // Filename is first argument.
+        std::ifstream inFile = openInFile(filename); // Open input log.
+        std::ofstream outFile = openOutFile(filename); // Open output file for writing.
+
+        /* Create the ThreadPool object. This contains our threads (on my
+        laptop 7 threads), and takes care of distributing the work load. */
+        ThreadPool workerPool;
+
+
+        /* This string is allocated for every line. It is a major performance
+        hit. */
+        std::string line;
+
+        /* Read input file, queue the calls, process the rets or add to
+        finale output. */
+        while (getline(inFile, line)) {
+                /* The line is a Call. This is a future work object. Add it to
+                the thread pool to be eventually processed. */
+                if (line.find("Call") != std::string::npos) {
+                        workerPool.enqueue(std::move(line));
+
+                /* The line is a ret. Process the stored calls to match the
+                return line. This will trigger the work (our condition variable). */
+                } else if (line.find("Ret") != std::string::npos) {
+                        workerPool.process(std::move(line));
+
+                /* This is not a line we can parse. Add it to the output log.
+                TODO: To make this sofware really useful, we should store the
+                line numbers and output the final result "in sequence". */
+                } else {
+                        outFile << line << std::endl;
+                }
+                /* The nifty progress bar by Ross Hemsley. We divide the postion
+                by 100 since the files are so big, we weren't hitting the
+                update treshold enough. */
+                progressBar((inFile.tellg()/100) + 1, fileSize/100);
+        }
+
+        /* Finalize */
+        std::cout << std::endl << "Lines left: " << workerPool.size()
+                << " -- Outputting to file." << std::endl; // Alert user.
+
+        /* Write all the remaining work to the output file. These are the
+        "calls" that weren't matched with "ret"urns. */
+        outFile << workerPool;
+
+        /* Cleanup */
+        inFile.close();
+        outFile.close();
+        return 0;
+}
